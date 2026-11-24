@@ -3172,6 +3172,8 @@ fn sort_columns(page: &str) -> Option<SortColumns> {
                 ("io", "io"),
                 ("net", "net"),
                 ("gpu", "gpu"),
+                ("disk", "disk"),
+                ("diskWrite", "diskWrite"),
             ],
         ),
         _ => return None,
@@ -3364,6 +3366,7 @@ mod tests {
         assert!(!sortable("services", "description"));
         assert!(!sortable("startup", "command"));
         assert!(sortable("services", "startType") && sortable("processes", "threads"));
+        assert!(sortable("history", "disk") && sortable("history", "diskWrite"));
         assert_eq!(sort_preference("services", "description", false), None);
         // The interface's validator: unsortable or unknown columns and malformed
         // values give way to the default order.
