@@ -1,0 +1,114 @@
+# Builds the portable Windows x64 executable on pushes to main and manual
+# requests. The previous workflows are archived as *.yml.bak while this
+# pipeline is in effect; drop the .bak suffix to restore them.
+name: Portable build (Win x64)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: portable-x64
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  build:
+    name: Build portable executable
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal --no-self-update
+          rustup default stable-x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build portable executable
+        run: node scripts/build.mjs --arch x64
+
+      # The plain build does not verify the produced binary; check the file,
+      # its PE machine and its version metadata before anything is uploaded.
+      - name: Verify executable
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          exe=target/release/argus.exe
+          if [ ! -f "$exe" ]; then echo "::error::missing $exe"; exit 1; fi
+          size=$(stat -c%s "$exe")
+          case "$size" in ''|*[!0-9]*) echo "::error::cannot determine size of $exe"; exit 1;; esac
+          if [ "$size" -lt 1048576 ]; then echo "::error::argus.exe is only $size bytes"; exit 1; fi
+          echo "argus.exe size: $size bytes"
+          node --input-type=module -e "
+          import { readFileSync } from 'node:fs';
+          import { verifyPeArchitecture } from './scripts/lib/windows-target.mjs';
+          verifyPeArchitecture(readFileSync('target/release/argus.exe'), 'x64');
+          console.log('PE machine check passed (x64)');
+          "
+      - name: Check version metadata
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $product = (Get-Item target/release/argus.exe).VersionInfo.ProductVersion
+          if (-not $product.StartsWith($version)) { throw "ProductVersion '$product' does not start with $version" }
+          Write-Output "ProductVersion: $product"
+
+      # Hidden window, isolated test identifier, no machine state is changed;
+      # the query proves the executable starts and reports its own version.
+      - name: Smoke test
+        run: |
+          node --input-type=module -e "
+          import { spawnSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import { cleanupTestProfile } from './scripts/lib/owned-test.mjs';
+          const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+          const identifier = 'dev.argus.taskmanager.test.ci-' + process.pid;
+          try {
+            const result = spawnSync('target/release/argus.exe', ['--argus-build-info', '--hidden', '--test', '--identifier', identifier], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+            if (result.error) throw result.error;
+            if (result.status !== 0) throw new Error('build info query failed with status ' + result.status);
+            const info = JSON.parse(result.stdout);
+            if (!String(info.build).startsWith(version)) throw new Error('unexpected version ' + JSON.stringify(info));
+            console.log('build ' + info.build + ' kind ' + info.buildKind);
+          } finally {
+            cleanupTestProfile(identifier);
+          }
+          "
+
+      - name: Stage artifact
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir staged
+          cp target/release/argus.exe "staged/Argus_${VERSION}_x64.exe"
+          ls -l staged
+          {
+            echo '### Portable build artifact'
+            echo "- Version: $VERSION"
+            echo "- Commit: $GITHUB_SHA"
+            echo '- SHA-256:'
+            echo '```'
+            sha256sum staged/*
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The artifact zip contains the executable alone: one archive, one
+      # extraction, no nested zip.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Argus-portable-x64
+          path: staged/*
+          if-no-files-found: error
+          retention-days: 7
