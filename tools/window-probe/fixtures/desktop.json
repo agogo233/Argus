@@ -4722,7 +4722,7 @@
     "rules": [],
     "history": true,
     "kernelSensors": false,
-    "updateCheck": true,
+    "updateCheck": false,
     "updateChannel": "stable",
     "updateRoute": "auto",
     "updateProxy": "https://gh-proxy.com/",

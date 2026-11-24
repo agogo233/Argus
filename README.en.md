@@ -169,7 +169,7 @@ Test signing is integrated; official releases currently ship without Windows Aut
 
 - **Committers and reviewers**: [@Ray-lea](https://github.com/Ray-lea), responsible for maintaining the code and reviewing external contributions.
 - **Approvers**: [@Ray-lea](https://github.com/Ray-lea), responsible for manually approving each production signing request.
-- **Privacy policy**: [English](PRIVACY.md#english) · [简体中文](PRIVACY.md#简体中文). Covers update checks enabled by default, proxy fallback, on-demand PawnIO downloads, voluntary feedback, and third-party data handling.
+- **Privacy policy**: [English](PRIVACY.md#english) · [简体中文](PRIVACY.md#简体中文). Covers update checks disabled by default, proxy fallback, on-demand PawnIO downloads, voluntary feedback, and third-party data handling.
 
 In-app updates use a separate Minisign release key to verify installers and version numbers; Windows Authenticode identifies the signer of an executable.
 

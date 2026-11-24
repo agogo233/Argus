@@ -704,7 +704,7 @@ impl Default for Settings {
             history_record: RecordGroups::default(),
             history_processes: Recording::default().processes,
             kernel_sensors: false,
-            update_check: true,
+            update_check: false,
             update_channel: UpdateChannel::default(),
             update_route: UpdateRoute::default(),
             update_proxy: crate::config::PROXY_PRESETS[0].into(),
@@ -1412,6 +1412,7 @@ mod tests {
             serde_json::json!({
                 "theme": "dark", "onboarding": 1, "seenVersion": "0.6.0", "trayInterval": 30000,
                 "historyKeepDays": null,
+                "updateCheck": true,
                 "desktopMonitor": {"locked": true},
                 "taskbarMonitor": {"style": "figures"},
                 "historyRecord": {"sensors": false},

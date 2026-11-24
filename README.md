@@ -171,7 +171,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 
 - **代码提交与审查（Committers and reviewers）**：[@Ray-lea](https://github.com/Ray-lea)，负责维护代码及审查外部贡献。
 - **签名审批（Approvers）**：[@Ray-lea](https://github.com/Ray-lea)，负责人工批准每个正式签名请求。
-- **隐私策略（Privacy policy）**：[简体中文](PRIVACY.md#简体中文) · [English](PRIVACY.md#english)。说明默认开启的更新检查、代理回退、按需下载 PawnIO、主动反馈及第三方服务的数据处理。
+- **隐私策略（Privacy policy）**：[简体中文](PRIVACY.md#简体中文) · [English](PRIVACY.md#english)。说明默认关闭的更新检查、代理回退、按需下载 PawnIO、主动反馈及第三方服务的数据处理。
 
 应用内更新使用独立的 Minisign 发布密钥校验安装包与版本号；Windows Authenticode 用于验证可执行文件的签名者。
 
