@@ -3046,7 +3046,7 @@ impl Desktop {
         let star = self.toggle(
             "star-reminder",
             label("settings.update.star.title"),
-            self.prefs.get(star::REMIND, true),
+            self.prefs.get(star::REMIND, false),
             false,
             |this, on, window, cx| this.preference(star::REMIND, json!(on), window, cx),
             window,

@@ -145,7 +145,7 @@ impl Desktop {
             && self.modal.is_none()
             && !self.snapshot.is_null()
             && due(
-                self.prefs.get(REMIND, true),
+                self.prefs.get(REMIND, false),
                 self.prefs.get::<Option<String>>(SHOWN, None).as_deref(),
                 &today(),
             );
@@ -218,7 +218,7 @@ impl Desktop {
     pub(in crate::frontend) fn star_test_state(&self) -> Value {
         json!({
             "shown": self.ui.star.card.as_ref().is_some_and(|card| card.leaving.is_none()),
-            "remind": self.prefs.get(REMIND, true),
+            "remind": self.prefs.get(REMIND, false),
         })
     }
 
