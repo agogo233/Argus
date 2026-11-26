@@ -21,6 +21,7 @@ pub fn code(value: u32) -> String {
         0x2000_0006 => "task manager replacement conflict",
         0x2000_0007 => "task manager replacement update failed",
         0x2000_0009 => "service authorization record missing or unreadable",
+        0x2000_000a => "scheduled task registration rejected",
         0x2000_0101 => "driver download failed",
         0x2000_0102 => "driver package invalid",
         0x2000_0103 => "driver signature invalid",
@@ -70,13 +71,72 @@ pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 /// Only call for a path directly involved in a failure. Never pass a command
 /// line, URL or free-form exception here. JSON quoting prevents log injection.
+/// The folder of an account's profile, usually the account's name, reads
+/// `<user>`.
 pub fn path(value: &Path) -> String {
+    let own = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+    let value = without_account(value, own.as_deref());
     let value = value.to_string_lossy();
     let mut bounded: String = value.chars().take(2048).collect();
     if value.chars().count() > 2048 {
         bounded.push('…');
     }
     serde_json::to_string(&bounded).expect("serialize diagnostic path")
+}
+
+/// `value` with an account's profile folder named `<user>`: any folder right
+/// under `Users` on a drive or share but the shared ones, and `own` (this
+/// account's profile, which can have been moved elsewhere) wherever it is.
+fn without_account<'a>(value: &'a Path, own: Option<&Path>) -> Cow<'a, Path> {
+    use std::path::{Component, PathBuf};
+    const SHARED: [&str; 4] = ["Public", "Default", "Default User", "All Users"];
+    let parts: Vec<Component> = value.components().collect();
+    let under_users = match parts.as_slice() {
+        [
+            Component::Prefix(_),
+            Component::RootDir,
+            Component::Normal(users),
+            Component::Normal(name),
+            ..,
+        ] => {
+            users.eq_ignore_ascii_case("Users")
+                && !SHARED
+                    .iter()
+                    .any(|shared| name.eq_ignore_ascii_case(shared))
+        }
+        _ => false,
+    };
+    // The system profile (a service's) names no person.
+    let own = own
+        .map(|own| own.components().collect::<Vec<_>>())
+        .filter(|own| {
+            own.len() >= 3
+                && !own
+                    .iter()
+                    .any(|part| part.as_os_str().eq_ignore_ascii_case("system32"))
+        });
+    let at = if under_users {
+        3
+    } else if let Some(own) = own.filter(|own| {
+        parts.len() >= own.len()
+            && own
+                .iter()
+                .zip(&parts)
+                .all(|(a, b)| a.as_os_str().eq_ignore_ascii_case(b.as_os_str()))
+    }) {
+        own.len() - 1
+    } else {
+        return Cow::Borrowed(value);
+    };
+    let mut redacted = PathBuf::new();
+    for (index, part) in parts.iter().enumerate() {
+        redacted.push(if index == at {
+            std::ffi::OsStr::new("<user>")
+        } else {
+            part.as_os_str()
+        });
+    }
+    Cow::Owned(redacted)
 }
 
 #[track_caller]
@@ -294,7 +354,9 @@ pub fn failure(text: &str) -> Cow<'static, str> {
 }
 
 /// The Win32 code as Rust ("(os error 5)") and windows-rs ("(0x80070005)")
-/// print it.
+/// print it, or as the service's error text shows it after the system's
+/// sentence ("Access is denied. (5)", "拒绝访问。（5）": `service.osError`,
+/// which leaves out Rust's suffix), also inside a longer message.
 fn os_error(text: &str) -> Option<u32> {
     let rust = text.match_indices("os error ").find_map(|(at, _)| {
         if joined(text, at) {
@@ -306,6 +368,30 @@ fn os_error(text: &str) -> Option<u32> {
             .ok()
     });
     rust.or_else(|| hresults(text).find_map(|h| (h >> 16 == 0x8007).then_some(h & 0xffff)))
+        .or_else(|| sentence_code(text))
+}
+
+/// A decimal code in parentheses right after a full stop: system error
+/// texts end with one ("." or "。"), so a number in parentheses elsewhere in
+/// a sentence ("step (5) of …") is not taken for a code.
+fn sentence_code(text: &str) -> Option<u32> {
+    text.char_indices().find_map(|(at, c)| {
+        let close = match c {
+            '(' => ')',
+            '（' => '）',
+            _ => return None,
+        };
+        let stop = text[..at].trim_end().chars().next_back()?;
+        if stop != '.' && stop != '。' {
+            return None;
+        }
+        let rest = &text[at + c.len_utf8()..];
+        let (digits, _) = rest.split_once(close)?;
+        // Win32 codes have at most five digits; HRESULTs are hex and found above.
+        ((1..=5).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| digits.parse().ok())
+            .flatten()
+    })
 }
 
 /// Failure HRESULTs: exactly eight hex digits with the top bit set, so that
@@ -395,7 +481,7 @@ mod tests {
 
     #[test]
     fn explicit_paths_remain_useful_and_cannot_inject_log_lines() {
-        let file = Path::new("C:\\Users\\Example\\驱动\\PawnIO.sys\n[INFO] forged\"line"); // i18n-ignore: synthetic path.
+        let file = Path::new("D:\\Tools\\驱动\\PawnIO.sys\n[INFO] forged\"line"); // i18n-ignore: synthetic path.
         let logged = path(file);
         assert_eq!(
             serde_json::from_str::<String>(&logged).unwrap(),
@@ -403,12 +489,60 @@ mod tests {
         );
         assert!(!logged.contains('\n'));
         let long = path(Path::new(&"a".repeat(3000)));
+        assert!(
+            path(Path::new(
+                r"C:\Users\Someone\AppData\Local\dev.argus.taskmanager\updates"
+            ))
+            .contains(r"Users\\<user>\\AppData")
+        );
         assert_eq!(
             serde_json::from_str::<String>(&long)
                 .unwrap()
                 .chars()
                 .count(),
             2049
+        );
+    }
+
+    #[test]
+    fn profile_folders_are_logged_without_the_account_name() {
+        let shown = |value: &str, own: Option<&str>| {
+            without_account(Path::new(value), own.map(Path::new))
+                .to_string_lossy()
+                .into_owned()
+        };
+        for (value, expected) in [
+            (
+                r"C:\Users\Someone\AppData\Local\x\settings.json",
+                r"C:\Users\<user>\AppData\Local\x\settings.json",
+            ),
+            (r"c:\users\Someone", r"c:\users\<user>"),
+            (r"\\?\D:\Users\Someone\a", r"\\?\D:\Users\<user>\a"),
+            (
+                r"C:\Users\Public\Documents\a",
+                r"C:\Users\Public\Documents\a",
+            ),
+            (
+                r"C:\Users\Default\NTUSER.DAT",
+                r"C:\Users\Default\NTUSER.DAT",
+            ),
+            (r"C:\Users", r"C:\Users"),
+            (r"C:\Program Files\Argus\a", r"C:\Program Files\Argus\a"),
+            (r"Users\Someone\a", r"Users\Someone\a"),
+        ] {
+            assert_eq!(shown(value, None), expected);
+        }
+        // A profile moved off `Users`, and the system profile, which is no one's.
+        let own = Some(r"E:\Profiles\Someone");
+        assert_eq!(
+            shown(r"E:\profiles\someone\AppData\x", own),
+            r"E:\profiles\<user>\AppData\x"
+        );
+        assert_eq!(shown(r"E:\Profiles\Other\x", own), r"E:\Profiles\Other\x");
+        let system = Some(r"C:\Windows\system32\config\systemprofile");
+        assert_eq!(
+            shown(r"C:\Windows\system32\config\systemprofile\x", system),
+            r"C:\Windows\system32\config\systemprofile\x"
         );
     }
 
@@ -575,6 +709,23 @@ mod tests {
                 "pipe closed (os error 233)",
             ),
             ("没有注册类 (0x80040154)", "hresult 0x80040154"),
+            // The service's error text: the system's words, then the code once.
+            ("管道已结束。（109）", "pipe closed (os error 109)"),
+            (
+                "The pipe has been ended. (109)",
+                "pipe closed (os error 109)",
+            ),
+            ("拒绝访问。（5）", "access denied (os error 5)"),
+            ("未指定的错误（0x80004005）", "hresult 0x80004005"),
+            // Inside a longer message, as the task manager replacement words it.
+            (
+                r"C:\Users\x\y: Access is denied. (5). Security software may block it.",
+                "access denied (os error 5)",
+            ),
+            (
+                "自检失败：拒绝访问。（5）。可能被安全软件拦截。",
+                "access denied (os error 5)",
+            ),
         ] {
             assert_eq!(failure(text), class, "{text}");
         }
@@ -590,6 +741,11 @@ mod tests {
             ("build 26300.9711 failed with 0x1234", "operation failed"),
             ("id ab0x80070005", "operation failed"),
             ("cmos error 5", "operation failed"),
+            // Only a code right after the system's full stop counts.
+            ("(5)", "operation failed"),
+            ("step (5) of the setup", "operation failed"),
+            ("第（2）步失败", "operation failed"),
+            ("Done. (2026112)", "operation failed"),
         ] {
             assert_eq!(failure(text), class, "{text}");
         }

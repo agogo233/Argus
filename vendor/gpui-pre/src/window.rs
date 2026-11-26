@@ -2234,6 +2234,9 @@ impl Window {
                 if draw_in_progress() {
                     log::debug!("deferring re-entrant window draw request");
                     deferred_force_render |= request_frame_options.force_render;
+                    // A demand-driven frame source invalidates the window
+                    // again only when asked.
+                    invalidator.wake_platform();
                     #[cfg(feature = "profiler")]
                     profiler::journal::record_reentrant_frame_skipped(window_id, Instant::now());
                     return;
@@ -2393,10 +2396,14 @@ impl Window {
 
                 // Platforms that stop requesting frames for idle windows only
                 // deliver another request after a wakeup. If demand remains
-                // after this frame (the window was re-invalidated mid-draw, or
-                // animations scheduled next-frame callbacks), re-arm the frame
+                // after this frame (the window was re-invalidated mid-draw,
+                // animations scheduled next-frame callbacks, or recent
+                // high-rate input keeps frames presenting), re-arm the frame
                 // source explicitly.
-                if invalidator.is_dirty() || !next_frame_callbacks.borrow().is_empty() {
+                if invalidator.is_dirty()
+                    || !next_frame_callbacks.borrow().is_empty()
+                    || input_rate_tracker.borrow().is_high_rate()
+                {
                     invalidator.wake_platform();
                 }
                 #[cfg(feature = "profiler")]
@@ -3834,9 +3841,8 @@ impl Window {
             .render_to_image(&self.rendered_frame.scene)
     }
 
-    /// Borrows the most recently rendered frame's scene, so benchmarks can validate their
-    /// output and report batch counts without cloning it.
-    #[cfg(feature = "bench-support")]
+    /// Borrows the last rendered scene for paint-order tests and batch benchmarks.
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     pub fn rendered_scene(&self) -> &Scene {
         &self.rendered_frame.scene
     }
@@ -5892,6 +5898,27 @@ impl Window {
         }
 
         result
+    }
+
+    /// Whether this window can present an overlay on its own composition surface.
+    pub fn supports_composition_overlay(&self) -> bool {
+        self.platform_window.supports_composition_overlay()
+    }
+
+    /// Begin a full-window overlay. A compositing backend can keep the already
+    /// painted content in one surface and the overlay and later paint in another.
+    pub fn paint_composition_overlay<R>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        draw: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if bounds.intersect(&self.content_mask().bounds).is_empty() {
+            return draw(self);
+        }
+        self.paint_layer(bounds, |window| {
+            window.next_frame.scene.mark_composition_overlay();
+            draw(window)
+        })
     }
 
     /// Paint the drop (non-inset) shadows from `shadows` into the scene at the current

@@ -89,6 +89,12 @@ impl Collector {
         }
     }
 
+    /// Which process rows carry the counters only optional columns and the
+    /// details pane show (`ProcessRow::extra`), from the next sample on.
+    pub fn set_extra_counters(&mut self, rows: crate::ExtraCounters) {
+        self.processes.set_extra_counters(rows);
+    }
+
     /// Starts measuring per-process network traffic under the given ETW
     /// session name; false without the rights to start a trace session.
     pub fn enable_process_network(&mut self, session_name: &str) -> bool {

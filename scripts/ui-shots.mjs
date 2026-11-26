@@ -4,14 +4,15 @@
 //
 //   node scripts/ui-shots.mjs <label> <steps.json> [--live | --fixture PATH]
 //     [--release | --executable PATH] [--probe PATH] [--width W --height H]
-//     [--theme dark|light] [--language <locale tag>]
+//     [--theme dark|light] [--language <locale tag>] [--keep-executable]
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import assert from "node:assert/strict";
 import { cleanupTestProfile, panics, testDirectories } from "./lib/owned-test.mjs";
-import { INSPECTIONS, aboutOf, parseSteps, pickFrames, runOptions, runSeconds, unmet, unwanted } from "./lib/ui-shots.mjs";
+import { INSPECTIONS, aboutOf, parseSteps, pickFrames, runOptions, runSeconds, summary, unmet, unwanted } from "./lib/ui-shots.mjs";
+import { windowProbe } from "./lib/window-probe.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 process.chdir(root);
@@ -41,20 +42,33 @@ const [config] = testDirectories(identifier);
 mkdirSync(config, { recursive: true });
 writeFileSync(
   resolve(config, "settings.json"),
-  JSON.stringify({ language: option("--language", "zh-CN"), theme: option("--theme", "dark"), closeToTray: false, updateCheck: false }),
+  JSON.stringify({ language: option("--language", "zh-CN"), theme: option("--theme", "dark"), closeToTray: false, updateCheck: false, ...needs.settings }),
 );
 // The development build is enough to look at the interface; measure with --release.
 const source = option("--executable", flag("--release") ? "target/release/argus.exe" : "target/debug/argus.exe");
 assert(existsSync(source), `${source} is missing: build it first`);
+// The instance runs a copy, so that a rebuild meanwhile neither waits on nor
+// replaces it. The copy is removed afterwards (it is the bulk of the output)
+// unless --keep-executable keeps it as the program of a later comparison.
 const executable = resolve(output, "argus.exe");
 copyFileSync(source, executable);
-const probe = resolve(option("--probe", "target/release/argus-window-probe.exe"));
+const found = windowProbe(option("--probe"));
+const probe = found.path;
 assert(existsSync(probe), "build the probe first: cargo build --release -p argus-window-probe --features capture");
+if (found.shared) console.log(`window probe of the main checkout: ${probe}`);
 const args = ["run", executable, "--hidden", "--test", "--identifier", identifier, "--stop-after", String(runSeconds(steps))];
 if (!live) {
   // Keys and presses only act with a fixture, where nothing reaches real processes.
   const fixture = resolve(output, "fixture.json");
-  copyFileSync(option("--fixture", "tools/window-probe/fixtures/desktop.json"), fixture);
+  const from = option("--fixture", "tools/window-probe/fixtures/desktop.json");
+  if (Object.keys(needs.settings).length) {
+    // The interface reads the fixture's settings in place of the saved ones.
+    const data = JSON.parse(readFileSync(from, "utf8"));
+    data.settings = { ...data.settings, ...needs.settings };
+    writeFileSync(fixture, JSON.stringify(data));
+  } else {
+    copyFileSync(from, fixture);
+  }
   args.push("--fixture", fixture);
 }
 if (size) args.push("--width", String(size[0]), "--height", String(size[1]));
@@ -110,7 +124,7 @@ try {
   if (!shown) throw Error(`window unavailable: ${error}`);
   await sleep(1500);
   for (const [index, step] of steps.entries()) {
-    const result = { step: index + 1 };
+    const result = { step: index + 1, ...(step.label ? { label: step.label } : {}) };
     if (step.note) console.log(`— ${step.note}`);
     if (step.control) send(step.control);
     if (step.probe) child.stdin.write(`${step.probe}\n`);
@@ -170,11 +184,21 @@ try {
   child.stdin.write("stop\n");
   for (let i = 0; i < 400 && !exited; i++) await sleep(50);
   if (!exited) child.kill();
-  writeFileSync(join(output, "results.json"), JSON.stringify({ identifier, live, results, failures, events, stderr: error, exitCode }, null, 2));
+  // `inspections` and `captures` first: what a reader looks up by name (docs/development/gpui.md).
+  const record = { identifier, live, ...summary(steps, results), results, failures, events, stderr: error, exitCode };
+  writeFileSync(join(output, "results.json"), JSON.stringify(record, null, 2));
   if (exited) logs.push(...cleanupTestProfile(identifier, { logs: resolve(output, "logs") }));
+  if (!flag("--keep-executable")) {
+    try {
+      rmSync(executable, { force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Still mapped by an instance that did not exit; the next run replaces it.
+    }
+  }
 }
 if (exitCode !== 0 && exitCode !== undefined) failures.push(`probe exited with ${exitCode}: ${error.slice(0, 500)}`, ...panics(logs));
 console.log(`output: ${output}`);
+console.log(`results: ${join(output, "results.json")}`);
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);

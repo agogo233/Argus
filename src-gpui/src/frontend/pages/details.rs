@@ -1,5 +1,6 @@
 //! The process details pane: the selected row looked up in the snapshot, or this computer's parts.
 use super::*;
+use argus_core::ExtraCounters;
 use gpui_kit::base::ElementExt;
 use gpui_kit::base::SelectableText;
 use sheet::{Fact, Look};
@@ -72,8 +73,11 @@ struct Part {
 const KB: f64 = 1024.;
 const MB: f64 = KB * 1024.;
 const GB: f64 = MB * 1024.;
-/// Width of the box around each fact name.
+/// Narrowest box around the fact names; it widens to the longest name.
 const FACT_NAME_WIDTH: f32 = 84.;
+/// Widest share of the pane's content the names take: a longer name wraps
+/// rather than squeeze the readings.
+const FACT_NAME_SHARE: f32 = 0.4;
 /// Pane width change per arrow key.
 const KEY_STEP: f32 = 16.;
 /// Largest share of the window the pane takes.
@@ -246,6 +250,39 @@ impl Desktop {
             members: process.into_iter().collect(),
             group: false,
         })
+    }
+
+    /// Tells the sampler which process rows need the counters only some
+    /// optional columns and this pane show: every row's for such a column,
+    /// else those of the processes the pane shows. With `fill`, rows that
+    /// join are sampled at once; not for the pane while paused, as that
+    /// would move the list held still.
+    pub(in crate::frontend) fn sync_extra_counters(&self, fill: bool) {
+        let rows = if columns::Preferences::load(&self.prefs).needs_extra_counters() {
+            ExtraCounters::All
+        } else if self.page == "processes" && self.details_shown() {
+            let key = self.selected.get("processes").cloned().unwrap_or_default();
+            ExtraCounters::processes(
+                self.details_pick(&key)
+                    .map(|picked| {
+                        picked
+                            .members
+                            .iter()
+                            .filter_map(|member| member["pid"].as_u64())
+                            .filter_map(|pid| u32::try_from(pid).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            )
+        } else {
+            ExtraCounters::Off
+        };
+        if *self.extra_counters.borrow() == rows {
+            return;
+        }
+        let fill = fill && (rows == ExtraCounters::All || !(self.paused || self.control_paused));
+        self.extra_counters.replace(rows.clone());
+        crate::commands::set_extra_counters(self.host.state(), rows, fill);
     }
 
     /// Starts following a newly selected row's slow details; the timeline
@@ -578,16 +615,30 @@ impl Desktop {
         }
 
         let sheet = self.details_sheet(picked, info);
+        // One name width for every section, so the readings line up.
+        let names = self.fact_name_width(
+            [
+                &sheet.process,
+                &sheet.resources,
+                &sheet.totals,
+                &sheet.version,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|fact| fact.label.as_str()),
+            window,
+            cx,
+        );
         if !picked.group {
             body = body
                 .child(self.details_section_title(label("details.section.process")))
-                .child(self.details_fact_rows(sheet.process, cx));
+                .child(self.details_fact_rows(sheet.process, names, cx));
         }
         body = body
             .child(self.details_section_title(label("details.section.resources")))
-            .child(self.details_fact_rows(sheet.resources, cx))
+            .child(self.details_fact_rows(sheet.resources, names, cx))
             .child(self.details_section_title(label("details.section.totals")))
-            .child(self.details_fact_rows(sheet.totals, cx));
+            .child(self.details_fact_rows(sheet.totals, names, cx));
         if picked.group {
             body = body
                 .child(self.details_section_title(tr!(
@@ -640,13 +691,33 @@ impl Desktop {
         if !sheet.version.is_empty() {
             body = body
                 .child(self.details_section_title(label("details.section.version")))
-                .child(self.details_fact_rows(sheet.version, cx));
+                .child(self.details_fact_rows(sheet.version, names, cx));
         }
         body.into_any_element()
     }
 
+    /// The width of the fact names' box: the longest name on one line, at
+    /// least `FACT_NAME_WIDTH` and at most `FACT_NAME_SHARE` of the content.
+    fn fact_name_width<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+        window: &Window,
+        cx: &App,
+    ) -> f32 {
+        let size = theme::font(13.);
+        let widest = names
+            .into_iter()
+            .map(|name| f32::from(theme::text_width(name, size, window, cx)).ceil() + 1.)
+            .fold(0., f32::max);
+        let content = self.details_display_width(window) - 32. - scrollbar::SIZE;
+        widest.clamp(
+            FACT_NAME_WIDTH,
+            (content * FACT_NAME_SHARE).max(FACT_NAME_WIDTH),
+        )
+    }
+
     /// Facts as the pane shows them: name and value in two columns.
-    fn details_fact_rows(&self, facts: Vec<Fact>, cx: &Context<Self>) -> AnyElement {
+    fn details_fact_rows(&self, facts: Vec<Fact>, names: f32, cx: &Context<Self>) -> AnyElement {
         let p = self.palette;
         let rows = facts
             .into_iter()
@@ -663,12 +734,6 @@ impl Desktop {
                         .child(fact.text)
                         .tooltip(move |window, cx| widgets::tooltip(tip.clone(), window, cx))
                         .into_any_element(),
-                    Look::Quiet(quiet) => div()
-                        .child(fact.text)
-                        .child(div().text_color(p.faint).child(quiet))
-                        .flex()
-                        .flex_wrap()
-                        .into_any_element(),
                     Look::Link(key) => {
                         let accent = p.accent;
                         Button::new("details-parent")
@@ -684,24 +749,40 @@ impl Desktop {
                             .into_any_element()
                     }
                 };
+                let value = match fact.quiet {
+                    // Wrapped as a whole after the reading when the pane is narrow.
+                    Some(quiet) => div()
+                        .flex()
+                        .flex_wrap()
+                        .child(value)
+                        .child(div().text_color(p.faint).child(quiet))
+                        .into_any_element(),
+                    None => value,
+                };
                 (fact.label, value)
             })
             .collect();
-        self.details_facts(rows)
+        self.details_facts(rows, names)
     }
 
-    /// Why a process shows no disk reading.
-    pub(in crate::frontend) fn missing_disk_hint(&self) -> String {
-        let measured = values(&self.snapshot["processes"])
-            .iter()
-            .any(|p| !p["diskRead"].is_null() || !p["diskWrite"].is_null());
+    /// Why a process shows no disk reading, of `requests` or of bytes.
+    pub(in crate::frontend) fn missing_disk_hint(&self, requests: bool) -> String {
+        let processes = values(&self.snapshot["processes"]);
+        let measured = |keys: &[&str]| {
+            processes
+                .iter()
+                .any(|p| keys.iter().any(|key| !p[*key].is_null()))
+        };
+        let bytes = measured(&["diskRead", "diskWrite", "diskReadTotal"]);
         let elevated = self
             .data
             .get("info")
             .is_some_and(|info| boolean(info, "elevated"));
         let service = self.data.get("privilege").filter(|s| s.is_object());
         let reason = match service {
-            _ if measured => "pending",
+            // A privileged service from before requests were reported.
+            _ if requests && bytes && !measured(&["diskReadOpsTotal"]) => "requests",
+            _ if bytes => "pending",
             None => "unavailable",
             _ if elevated => "unavailable",
             Some(service) if text(service, "state") == "notInstalled" => "enable",
@@ -1073,7 +1154,7 @@ impl Desktop {
     }
 
     /// Name and value pairs in two columns.
-    fn details_facts(&self, rows: Vec<(String, AnyElement)>) -> AnyElement {
+    fn details_facts(&self, rows: Vec<(String, AnyElement)>, names: f32) -> AnyElement {
         let p = self.palette;
         div()
             .flex()
@@ -1086,7 +1167,7 @@ impl Desktop {
                     .gap(px(12.))
                     .child(
                         div()
-                            .w(px(FACT_NAME_WIDTH))
+                            .w(px(names))
                             .flex_shrink_0()
                             .text_color(p.muted)
                             .child(name),

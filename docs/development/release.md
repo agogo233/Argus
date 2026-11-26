@@ -9,10 +9,31 @@
 | 工作流 | 触发 | 内容 |
 |---|---|---|
 | `check.yml` | 拉取请求；手动运行（Actions 页面或 `gh workflow run check.yml`）；发布时调用 | 提交信息格式（仅拉取请求，含标题）；Biome、文案检查、生成代码检查、脚本测试、rustfmt、x64 与 ARM64 Clippy、Rust 测试、第三方许可声明是否最新 |
+| `package.yml` | 手动运行（`gh workflow run package.yml -f arch=arm64`）；nightly 调用 | 在 `windows-11-arm` 或 `windows-latest` 上直接构建未签名的测试安装包与免安装程序，执行静默安装／卸载冒烟检查并上传制品，不附带测试证书也不发布 Release |
+| [`nightly.yml`](../../.github/workflows/nightly.yml) | 每天 18:23 UTC（北京时间 02:23）；手动运行（`gh workflow run nightly.yml`） | 对 `main` 运行开发机上不能运行的检查，见下文 [nightly](#nightly) |
 | `release.yml` | 推送 `v*` 标签 | 核对标签、版本号、`changelog/zh-CN.md`、其他语言已译完的条目与更新公钥，确认标签在 `main` 上；运行上面的检查；在 x64 与 ARM64 运行器上分别构建并为应用内更新签名，再用仓库里的公钥校验签名和其中的版本号；在各架构原生系统上静默安装，核对卸载项及安装文件、运行副本、免安装下载的更新类型，再静默卸载；为更新对话框显示的更新内容签名并校验；生成双架构更新清单并发布 GitHub Release |
 | [`website.yml`](../../.github/workflows/website.yml) | 手动运行（`main`），或发布完成后由 `release.yml` 调用 | 以已发布的稳定版构建文档和下载页，同步两条更新清单，逐项校验公网下载、更新清单、官网页面和域名跳转。配置见[官网与发行镜像](website.md) |
 
 日常提交与普通分支推送前按改动范围完成相关验证，已覆盖当前改动的结果可复用；纯文档修改核对内容与相关链接即可。正式发布前运行 `start.bat check`，使用 `node scripts/notices.mjs --check` 核对第三方许可声明。
+
+### nightly
+
+推送到 `main` 不触发检查，nightly 每天在 `main` 上补跑一次，并运行那些会改动机器、只能在一次性环境里做的检查：托管运行器每个任务用完即弃，以管理员身份运行且关闭了 UAC。`main` 自上一次成功的 nightly 以来没有新提交时，只运行依赖安全审计（新漏洞公告不随代码变化）；手动运行默认全部执行。
+
+| 任务 | 运行器 | 内容 |
+|---|---|---|
+| 检查 | `windows-latest` | 调用 `check.yml`，与拉取请求的检查相同 |
+| 安全审计 | `ubuntu-latest` | `main` 没有变化时单独运行 `pnpm audit` 与 `cargo audit` |
+| 打包 | `windows-latest`、`windows-11-arm` | 调用 `package.yml` 构建两种架构的未签名安装包与免安装程序并做安装冒烟，制品保留 7 天，可直接交给他人试用 |
+| 升级 | `windows-latest` | `scripts/upgrade-smoke.mjs`：装上最新的正式版并运行一次，让它保存设置、写下历史；再用当晚的安装包覆盖安装并运行，核对设置未被重置、日志里没有 panic、错误或设置与历史读写失败、新版本继续写历史；最后卸载 |
+| 特权服务与任务管理器替换 | `windows-latest`、`windows-2022` | `scripts/privileged-smoke.mjs`：为当前账户安装特权服务，更新；删掉授权记录后修复；开启任务管理器替换并确认 `taskmgr.exe` 打开 Argus，再恢复；最后用卸载程序的命令删除服务，确认注册与服务文件都已清除 |
+| 实机测试 | `windows-latest`、`windows-2022`、`windows-11-arm` | `scripts/live-tests.mjs` 按组运行标了 `#[ignore]`、需要真实机器的测试（实时采集、计划任务、回收站、自有子进程、跨卷移动历史、非活动桌面上的窗口激活），组的清单在 `scripts/lib/live-tests.mjs`。运行器以管理员身份运行且关闭了 UAC，需要标准权限或 UAC 的组记为跳过并写明原因（它们在开启 UAC 的虚拟机里以标准账户运行）；`windows-11-arm` 只有一个卷，跨卷的组同样跳过 |
+| ARM64 测试 | `windows-11-arm` | 在 ARM64 上原生运行 `cargo test --workspace` |
+| 界面检查 | `windows-latest`、`windows-2022` | 开发构建的 `ui-smoke` 与步骤文件。运行器没有显卡，靠软件渲染，字体也与开发机不同：结果只与同一运行器上一次的结果比较，不与开发机的截图比较。窗口捕获（Windows.Graphics.Capture）在运行器上拒绝测试窗口，探针改用 `PrintWindow` 截取静态画面；录制帧的步骤文件记为跳过（`ui-steps.mjs --skip-recordings`） |
+
+`windows-2022` 是 Windows 10 那一代的系统（内部版本 20348，早于 24H2），用来覆盖旧版任务栏与旧系统上的采集路径。各任务的报告、日志与截图作为制品保留 7 天，任务摘要列出各任务的结果。
+
+升级、特权服务与实机测试的脚本会改动所在的机器：它们只在 GitHub Actions 中，或设了 `ARGUS_DISPOSABLE_MACHINE=1` 的实验虚拟机里运行，否则直接退出；不要在开发机上设这个变量。在虚拟机里运行时用法相同，例如 `node scripts/upgrade-smoke.mjs <旧安装包> <新安装包>`、`node scripts/privileged-smoke.mjs <已安装的 argus.exe>`、`node scripts/live-tests.mjs [组名…]`（`--list` 列出各组）。
 
 ## 提交信息
 
@@ -107,6 +128,20 @@ pnpm commitlint --message "feat(ui): 新功能"  # 检查一条信息
 - 用书面语，按 ASD-STE100 的原则写：短句，一句只说一件事，主动语态，术语与 `locales/` 的界面文案一致。单条控制在两三句，避免过长。
 - 外部贡献者的拉取请求在相关条目末尾注明贡献者与编号，并分别链接到其 GitHub 主页和该拉取请求。简体中文、繁体中文与日文写作 `（[@用户名](https://github.com/用户名) [#编号](https://github.com/Ray-lea/Argus/pull/编号)）`，多位贡献者以“、”分隔；其他语言写作 ` ([@用户名](…) [#编号](…))`，以 `, ` 分隔。同一贡献者的多个拉取请求依次列出编号。维护者自己的拉取请求不注明。
 - 条目对应的 issue 同样在末尾链接 `https://github.com/Ray-lea/Argus/issues/编号`，括号与分隔符同上；同一条目既有贡献者又有 issue 时写在同一对括号内。
+
+## 发布前准备
+
+决定发布某个版本后、执行[发布步骤](#发布步骤)之前，按以下顺序准备。范围是上一个发布标签以来的全部提交（`git log v<上一版>..main`）。
+
+1. 代码审查：逐项查看本周期的改动，找出回归、半途的改动、遗留的调试代码与未同步的文档，修复后按类型分别提交。改动面大时另请一次独立审查（例如交给 Codex 只读复审），审查报告与修复记录放在 `archives.local/<日期>/`。
+2. 文档：`docs/guide/` 与 `docs/architecture/` 按本周期的行为变化更新（快捷键、设置项、默认值、模块职责）；`docs/known-issues.md` 与 `docs/roadmap.md` 去掉已解决的条目。
+3. README：八种语言的特性列表、快捷键表与系统要求保持一致；界面有明显变化时重新生成预览图与特性演示（`node scripts/readme-previews.mjs`、`node scripts/readme-features.mjs`），逐张核对各语言。
+4. 官网：演示程序与开发版的界面、文案和交互同步，按 [官网与发行镜像](website.md) 构建并核对受影响的页面。
+5. 更新日志：按[更新日志的内容](#更新日志的内容)起草 `changelog/zh-CN.md` 的本版条目，其他语言逐条对应。
+6. 复审：请一次独立复审，重点核对更新日志是否遗漏用户可感知的变化、有无误列、署名与链接是否正确，按意见修改。
+7. 安装程序：构建候选安装包（`node scripts/build.mjs --installer`），在虚拟机中验证全新安装、从上一版升级、卸载与以普通权限启动，不在开发机上运行它。
+
+准备完成后由维护者确认版本号，再执行发布步骤。
 
 ## 发布步骤
 

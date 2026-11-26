@@ -32,9 +32,11 @@ Windows 触摸屏的 `WM_POINTER` 消息转换为 GPUI `TouchEvent`，坐标按�
 
 ### 截图与录制
 
-`node scripts/ui-shots.mjs <标签> <步骤文件>` 按步骤驱动一个隔离、不激活的测试窗口，用于核对新界面和做回归检查。默认使用开发构建 `target/debug/argus.exe` 和模拟快照 `tools/window-probe/fixtures/desktop.json`；`--release` 换成发布构建，`--live` 改用实时数据（此时按键、单击与拖动不生效），`--fixture` 指定其他快照，`--theme`、`--language` 设定外观与语言，`--width`、`--height` 指定客户区物理尺寸。探针需先以 `cargo build --release -p argus-window-probe --features capture` 构建。截图、录制帧、拼图和 `results.json` 写入 `target/native-validation/<标签>`，测试标识的数据目录在结束时删除，其中的诊断日志先复制到输出目录的 `logs/`；有断言未满足时以退出码 1 结束。测试实例因 panic 中止（退出码 `0xc0000409`）时，失败信息附带日志中的 `panic at` 一行。
+`node scripts/ui-shots.mjs <标签> <步骤文件>` 按步骤驱动一个隔离、不激活的测试窗口，用于核对新界面和做回归检查。默认使用开发构建 `target/debug/argus.exe` 和模拟快照 `tools/window-probe/fixtures/desktop.json`；`--release` 换成发布构建，`--live` 改用实时数据（此时按键、单击与拖动不生效），`--fixture` 指定其他快照，`--theme`、`--language` 设定外观与语言，`--width`、`--height` 指定客户区物理尺寸。探针需先以 `cargo build --release -p argus-window-probe --features capture` 构建；工作树里没有自己的探针时，`ui-shots`、`ui-smoke`、`perf-native` 等脚本使用主工作区构建的探针，并打印其路径（工作树改动了探针本身时，在工作树里构建它）。截图、录制帧、拼图和 `results.json` 写入 `target/native-validation/<标签>`，测试标识的数据目录在结束时删除，其中的诊断日志先复制到输出目录的 `logs/`；有断言未满足时以退出码 1 结束。测试实例因 panic 中止（退出码 `0xc0000409`）时，失败信息附带日志中的 `panic at` 一行。实例运行的是复制到输出目录的程序，结束后删除这份副本；要留作之后对照的基准程序时加 `--keep-executable`。
 
-步骤文件是步骤数组，或 `{ "about": "…", "window": [宽, 高], "run": {...}, "steps": [...] }`。`about` 说明这组步骤检查什么，仓库里的步骤文件都要有；`run` 写明这组步骤运行所需的条件，运行时不必另加参数：`"live": true` 表示使用实时数据，`"env"` 为测试实例的环境变量（仅限 `ARGUS_` 开头的名称）；`"parity"` 列出一组环境变量，表示设了它们之后每张截图都应与不设时逐像素相同，由 `ui-steps.mjs` 负责对照。一个步骤可组合以下几项，按表中顺序执行：
+`results.json` 的字段：`inspections` 以 `label` 为键，值为该检查的回复（如 `inspections.open.state.focus`）；`captures` 是按顺序写出的图片文件名；`results` 是逐步记录（`step`、有 `label` 时的 `label` 与 `inspect`），中途失败的步骤及其后的步骤不在其中；`failures` 是未满足的断言与错误，`events` 是探针与实例的全部事件，`stderr`、`exitCode` 是探针的输出与退出码。
+
+步骤文件是步骤数组，或 `{ "about": "…", "window": [宽, 高], "run": {...}, "steps": [...] }`。`about` 说明这组步骤检查什么，仓库里的步骤文件都要有；`run` 写明这组步骤运行所需的条件，运行时不必另加参数：`"live": true` 表示使用实时数据，`"env"` 为测试实例的环境变量（仅限 `ARGUS_` 开头的名称）；`"settings"` 为实例启动时已保存的设置，按顶层键覆盖每次运行写入的设置与模拟快照中的设置，用于检查启动时按设置执行的行为（如 `desk-start.json` 以已开启的桌面监控启动）；`"parity"` 列出一组环境变量，表示设了它们之后每张截图都应与不设时逐像素相同，由 `ui-steps.mjs` 负责对照。一个步骤可组合以下几项，按表中顺序执行：
 
 | 键 | 作用 |
 |---|---|
@@ -199,7 +201,7 @@ Windows 触摸屏的 `WM_POINTER` 消息转换为 GPUI `TouchEvent`，坐标按�
 
 `cargo test -p argus --test image_atlas_edges` 在始终隐藏的窗口中读取 GPU 绘制结果，检查放大、缩小、半透明及单纹素图片的四条边。测试图块周围放置高对比度颜色，验证线性采样保持在图块边界内，防止概况带遮罩边缘混入相邻图标。
 
-README 的四张预览图通过 `node scripts/readme-previews.mjs` 生成，为 1600×1000 像素的无损 PNG。隔离实例使用 125% 界面缩放直接绘制文字和图标，按捕获边框校准客户区尺寸，导出过程保留原生像素。
+README 的四张预览图通过 `node scripts/readme-previews.mjs` 生成，为 1600×1000 像素的无损 PNG。隔离实例使用 125% 界面缩放直接绘制文字和图标，按捕获边框校准客户区尺寸，导出过程保留原生像素。预览展示名称、PID、CPU、内存、磁盘读写、网络和 GPU 列，并检查各列在硬件详情面板旁完整显示，无需横向滚动。
 
 `pnpm test:startup` 在独立 Windows 桌面运行开发脚本，检查默认启动和 `--hidden` 的窗口可见性。`pnpm test:hold` 以隐藏的隔离实例运行开发脚本，检查暂停期间的文件变更不触发重建、解除后只重建一次，以及此后的变更立即重建；它在 `vendor/` 下短暂写入一个不参与构建的标记文件。
 

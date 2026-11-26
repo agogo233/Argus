@@ -104,7 +104,7 @@ fn exited_process_releases_its_cached_handle_and_keeps_final_cycles() {
     fresh_counters(&mut tracker, Instant::now());
     let entry = tracker.tracked.get(&key).expect("running child is tracked");
     assert!(entry.handle.is_some());
-    let before = entry.cpu_cycles;
+    let before = entry.totals.cycles;
     let stopped = child.stop();
     let final_cycles = process_cycles(HANDLE(child.0.as_raw_handle())).unwrap();
     zero_thread_snapshot(&mut tracker, key, final_cycles);
@@ -117,8 +117,8 @@ fn exited_process_releases_its_cached_handle_and_keeps_final_cycles() {
         entry.handle.is_none(),
         "exited process handle is still cached"
     );
-    assert_eq!(entry.cpu_cycles, final_cycles);
-    assert!(entry.cpu_cycles >= before);
+    assert_eq!(entry.totals.cycles, final_cycles);
+    assert!(entry.totals.cycles >= before);
     // A later snapshot must not recreate the handle while an external owner
     // still keeps the exited process object in the native enumeration.
     fresh_counters(&mut tracker, Instant::now());
@@ -197,4 +197,25 @@ fn native_observation_time_survives_cached_rows_and_late_replies() {
     release.send(()).unwrap();
     fresh_counters(&mut tracker, requested);
     assert!(tracker.sample_started().unwrap() >= requested);
+}
+
+#[test]
+fn extra_counters_come_only_with_the_rows_asked_for() {
+    let child = ChildProcess::start(false);
+    let pid = child.0.id();
+    let mut tracker = ProcessTracker::new(MetaStore::new());
+    tracker.set_extra_counters(ExtraCounters::processes(vec![pid]));
+    let rows = fresh_counters(&mut tracker, Instant::now());
+    let carried: Vec<u32> = rows
+        .iter()
+        .filter(|row| row.extra.is_some())
+        .map(|row| row.pid)
+        .collect();
+    assert_eq!(carried, [pid]);
+    tracker.set_extra_counters(ExtraCounters::All);
+    let rows = fresh_counters(&mut tracker, Instant::now());
+    assert!(rows.iter().all(|row| row.extra.is_some()));
+    tracker.set_extra_counters(ExtraCounters::Off);
+    let rows = fresh_counters(&mut tracker, Instant::now());
+    assert!(rows.iter().all(|row| row.extra.is_none()));
 }

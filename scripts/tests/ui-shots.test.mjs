@@ -1,6 +1,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aboutOf, parseSteps, pickFrames, runOptions, runSeconds, unmet, unwanted, verdict } from "../lib/ui-shots.mjs";
+import { aboutOf, parseSteps, pickFrames, runOptions, runSeconds, summary, unmet, unwanted, verdict } from "../lib/ui-shots.mjs";
+import { windowProbe } from "../lib/window-probe.mjs";
+
+test("results name each inspection and every image a run wrote", () => {
+  const steps = parseSteps([
+    { capture: "start" },
+    { inspect: "layout", label: "open", wait: 100 },
+    { crop: { from: "start", name: "zoom", region: [0, 0, 10, 10] } },
+    { captureWindow: { name: "desk", class: "Zed::Window" } },
+    { capture: "never" },
+  ]);
+  // The run stopped at the last step: it has no result and wrote no image.
+  const results = [{ step: 1 }, { step: 2, label: "open", inspect: { event: "ui-layout", label: "open", state: { page: 1 } } }, { step: 3 }, { step: 4 }];
+  assert.deepEqual(summary(steps, results), {
+    inspections: { open: { event: "ui-layout", label: "open", state: { page: 1 } } },
+    captures: ["start.png", "zoom.png", "desk.png"],
+  });
+});
+
+test("a worktree without a probe uses the main checkout's", () => {
+  const root = "D:\\work\\target\\worktrees\\a";
+  const main = () => "D:\\work";
+  const own = "D:\\work\\target\\worktrees\\a\\target\\release\\argus-window-probe.exe";
+  const theirs = "D:\\work\\target\\release\\argus-window-probe.exe";
+  assert.deepEqual(windowProbe(undefined, { root, main, exists: (path) => path === theirs }), { path: theirs, shared: true });
+  assert.deepEqual(windowProbe(undefined, { root, main, exists: () => true }), { path: own, shared: false });
+  // Neither exists: the worktree's own path, for the message that asks to build it.
+  assert.deepEqual(windowProbe(undefined, { root, main, exists: () => false }), { path: own, shared: false });
+  assert.deepEqual(windowProbe(undefined, { root, main: () => null, exists: () => false }), { path: own, shared: false });
+  assert.deepEqual(windowProbe("probe.exe", { root, main, exists: () => false }), { path: `${root}\\probe.exe`, shared: false });
+});
 
 test("steps are checked before the window starts", () => {
   assert.throws(() => parseSteps({}), /array/);
@@ -70,10 +100,12 @@ test("a drag spells out hover, press, even moves and release", () => {
 });
 
 test("a steps file states what its run needs", () => {
-  assert.deepEqual(runOptions([{ wait: 1 }]), { live: false, env: {}, parity: {} });
-  assert.deepEqual(runOptions({ steps: [] }), { live: false, env: {}, parity: {} });
-  assert.deepEqual(runOptions({ run: { live: true, env: { ARGUS_TEST_BACKDROP_BUILD: "22000" } }, steps: [] }), { live: true, env: { ARGUS_TEST_BACKDROP_BUILD: "22000" }, parity: {} });
+  assert.deepEqual(runOptions([{ wait: 1 }]), { live: false, env: {}, parity: {}, settings: {} });
+  assert.deepEqual(runOptions({ steps: [] }), { live: false, env: {}, parity: {}, settings: {} });
+  assert.deepEqual(runOptions({ run: { live: true, env: { ARGUS_TEST_BACKDROP_BUILD: "22000" } }, steps: [] }), { live: true, env: { ARGUS_TEST_BACKDROP_BUILD: "22000" }, parity: {}, settings: {} });
   assert.deepEqual(runOptions({ run: { parity: { ARGUS_TABLE_ROWS: "component" } }, steps: [] }).parity, { ARGUS_TABLE_ROWS: "component" });
+  assert.deepEqual(runOptions({ run: { settings: { desktopMonitor: { enabled: true } } }, steps: [] }).settings, { desktopMonitor: { enabled: true } });
+  assert.throws(() => runOptions({ run: { settings: [] } }), /run.settings is an object/);
   assert.throws(() => runOptions({ run: { parity: { TABLE_ROWS: "component" } } }), /run.parity: TABLE_ROWS must be an ARGUS_ switch/);
   assert.throws(() => runOptions({ run: { parity: ["ARGUS_X"] } }), /run.parity maps names to values/);
   assert.throws(() => runOptions({ run: { env: { PATH: "x" } } }), /ARGUS_ switch/);
