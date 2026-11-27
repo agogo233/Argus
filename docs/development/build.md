@@ -2,13 +2,15 @@
 
 Windows 构建使用 `stable-x86_64-pc-windows-msvc`（在 x64 开发机上通过仓库目录的 rustup override 选择）或 `stable-aarch64-pc-windows-msvc`。发行配置启用 LTO，静态链接 VC 运行库，使用系统的 Universal CRT。`build-support/windows-runtime.rs` 按目标架构（x64 或 ARM64）为应用、服务和测试配置运行库。
 
-GPUI 提供应用的 Windows manifest，声明普通权限、PerMonitorV2 DPI 感知和 Common Controls。应用构建脚本嵌入图标与版本资源，各尺寸图标通过 `node scripts/icons.mjs` 生成：16、20、24、30、32、36、40、42、48 px 取 `resources/icons/logo-<尺寸>.svg` 的整像素母版，64 与 256 px 取 `resources/logo.svg`。界面里的标志按设备像素尺寸选用同一组来源：64 px 以下取不大于该尺寸的最大像素母版并居中，64 px 起用矢量标志。托盘的“应用图标”样式按系统小图标尺寸加载图标资源，同样取到对应的像素母版。资源管理器按路径和序号缓存图标，安装程序在安装与更新结束时通知其丢弃图标缓存，桌面、开始菜单和固定到任务栏的快捷方式随之换用新版本的图标。
+GPUI 提供应用的 Windows manifest，声明普通权限、PerMonitorV2 DPI 感知和 Common Controls。应用构建脚本嵌入图标与版本资源，各尺寸图标通过 `node scripts/icons.mjs` 生成：16、20、24、30、32、36、40、42、48 px 取 `resources/icons/logo-<尺寸>.svg` 的整像素母版，64 与 256 px 取 `resources/logo.svg`。界面里的标志按设备像素尺寸选用同一组来源：64 px 以下取不大于该尺寸的最大像素母版并居中，64 px 起用矢量标志。托盘的“应用图标”样式按系统小图标尺寸加载图标资源，同样取到对应的像素母版。资源管理器按路径和序号缓存图标，更新沿原名替换 `argus.exe` 和管理员启动的 `argus.ico` 后，它不会自行换用新图标：安装程序在安装与更新结束时运行新的 `argus.exe --argus-refresh-icons`，由它通知外壳丢弃图标缓存，再逐个通知任务栏重新读取当前账户固定的快捷方式，桌面快捷方式、开始菜单与任务栏固定项（以及并入固定项的运行中按钮）随之换用新版本的图标。这一通知须由与资源管理器同位数的进程发出，32 位的安装程序自己发出时无效。托盘图标由运行中的程序从自身资源加载，不经过这一缓存。
 
 `scripts/build.mjs` 先构建任务管理器启动器与恢复程序，再将它们嵌入 `argus.exe`；`--arch x64|arm64` 可指定目标架构（不指定时跟随当前 Windows 架构），交叉指定其他架构时输出到 `target/<triple>/release`。签名流水线通过 `--skip-helpers` 复用已签名的辅助程序。`scripts/bundle.mjs` 同样支持 `--arch x64|arm64`，调用 NSIS 生成对应架构的安装包并校验主程序 PE 架构。
 
 开发脚本从 `target/native-dev/runs` 启动副本，编译器可继续更新构建产物。项目检查使用独立目录 `target/rust-analyzer`。更改链接器、`RUSTFLAGS` 或工具链会触发依赖重编译。
 
-开发配置对依赖、`argus` 与 `argus-core` 使用 `opt-level = 2`，兼顾表格滚动与采样性能。项目代码保留行号以供回溯。`cargo test` 继承开发配置。
+开发配置对依赖、`argus`、`argus-view-logic` 与 `argus-core` 使用 `opt-level = 2`，兼顾表格滚动与采样性能。项目代码保留行号以供回溯。`cargo test` 继承开发配置，只有 `argus-view-logic` 的测试按 `opt-level = 0` 编译。
+
+界面中不依赖 GPUI 的逻辑在 `argus-view-logic`（见[原生界面](../architecture/frontend.md)），它的测试不经过界面 crate：改动其中一个函数体后，`cargo test -p argus-view-logic --lib --no-run` 约 4 秒，界面 crate 里同样的改动后 `cargo test -p argus --lib --no-run` 约 22 秒。开发构建（`cargo build -p argus`）在改动该 crate 的函数体后约 15 秒，界面 crate 的增量编译几乎全部复用；同一函数在界面 crate 里时约 68 秒（增量编译，i5-13500HX，机器同时有其他负载）。单独构建该 crate 时，依赖按它自己的特性组合另编一份，首次约 2 分钟，之后复用。
 
 开发构建的 DirectX 着色器启用优化并保留调试信息。性能对照使用发行构建，统一窗口尺寸、画质和显示条件。
 
